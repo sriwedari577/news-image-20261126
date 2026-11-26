@@ -1,35 +1,27 @@
-// News broadsheet for Thursday 26 November 2026.
-// Node 22, standard library only. Draws a 1024x1024 PNG to $MAKEFUN_OUTPUT_DIR
-// (or /output/entry.png when unset). Deterministic: no clock, no randomness.
-// Every glyph below is a stroke design made for this page on a 6-by-10 grid.
-
-import { deflateSync } from "node:zlib";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+// One day in the news — Thursday 26 November 2026.
+// Draws a single 1024x1024 broadsheet PNG in code: Node stdlib only,
+// no network, deterministic. Writes to $MAKEFUN_OUTPUT_DIR/entry.png
+// (or /output/entry.png when unset).
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as zlib from "node:zlib";
 
 const W = 1024;
 const H = 1024;
 const buf = new Uint8Array(W * H * 3);
 
-function rgb(hex) {
-  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+function rgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
-const PAPER = rgb("#f7f1e3");
-const INK = rgb("#141210");
-const RED = rgb("#b3202c");
-const BLUE = rgb("#1d4e89");
-const TEAL = rgb("#0f6b5c");
-const GOLD = rgb("#c4901a");
-const GREY = rgb("#6b655a");
-const LIGHT = rgb("#e8dfc9");
-const MIDGREY = rgb("#9a937f");
-
-function px(x, y, c) {
-  if (x < 0 || y < 0 || x >= W || y >= H) return;
-  const i = (y * W + x) * 3;
+function setPx(x: number, y: number, c: [number, number, number]): void {
+  const xi = Math.round(x), yi = Math.round(y);
+  if (xi < 0 || yi < 0 || xi >= W || yi >= H) return;
+  const i = (yi * W + xi) * 3;
   buf[i] = c[0]; buf[i + 1] = c[1]; buf[i + 2] = c[2];
 }
-function fillRect(x, y, w, h, c) {
+function fillRect(x: number, y: number, w: number, h: number, hex: string): void {
+  const c = rgb(hex);
   const x0 = Math.max(0, Math.round(x)), y0 = Math.max(0, Math.round(y));
   const x1 = Math.min(W, Math.round(x + w)), y1 = Math.min(H, Math.round(y + h));
   for (let yy = y0; yy < y1; yy++) {
@@ -37,518 +29,525 @@ function fillRect(x, y, w, h, c) {
     for (let xx = x0; xx < x1; xx++) { buf[i] = c[0]; buf[i + 1] = c[1]; buf[i + 2] = c[2]; i += 3; }
   }
 }
-function hRule(x, y, w, h, c) { fillRect(x, y, w, h, c); }
-function disc(cx, cy, r, c) {
-  const r2 = r * r;
-  for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
-    for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
-      const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
-      if (dx * dx + dy * dy <= r2) px(x, y, c);
+function disc(cx: number, cy: number, r: number, c: [number, number, number]): void {
+  const rr = Math.max(0.5, r);
+  for (let yy = Math.floor(cy - rr); yy <= Math.ceil(cy + rr); yy++)
+    for (let xx = Math.floor(cx - rr); xx <= Math.ceil(cx + rr); xx++) {
+      const dx = xx - cx, dy = yy - cy;
+      if (dx * dx + dy * dy <= rr * rr) setPx(xx, yy, c);
     }
-  }
 }
-function ring(cx, cy, r, t, c) {
-  for (let a = 0; a < 360; a += 1) {
-    const rad = (a * Math.PI) / 180;
-    for (let k = -t / 2; k <= t / 2; k += 0.7) {
-      px(Math.round(cx + (r + k) * Math.cos(rad)), Math.round(cy + (r + k) * Math.sin(rad)), c);
-    }
-  }
-}
-function seg(x1, y1, x2, y2, w, c) {
-  const dx = x2 - x1, dy = y2 - y1;
-  const len = Math.hypot(dx, dy) || 1;
-  const steps = Math.ceil(len / 0.3);
-  const half = w / 2;
+function line(x0: number, y0: number, x1: number, y1: number, hex: string, lw: number): void {
+  const c = rgb(hex);
+  const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 2));
+  const r = Math.max(0.6, lw / 2);
   for (let s = 0; s <= steps; s++) {
     const t = s / steps;
-    const cx = x1 + dx * t, cy = y1 + dy * t;
-    fillRect(Math.round(cx - half), Math.round(cy - half), Math.ceil(w), Math.ceil(w), c);
+    disc(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, r, c);
   }
 }
-function poly(points, c) {
-  // Scanline fill of a simple polygon.
+function polyline(pts: [number, number][], hex: string, lw: number): void {
+  for (let i = 0; i + 1 < pts.length; i++) line(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], hex, lw);
+}
+function polygon(pts: [number, number][], hex: string): void {
+  // scanline fill for a simple polygon
+  const c = rgb(hex);
   let minY = Infinity, maxY = -Infinity;
-  for (const p of points) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
-  for (let y = Math.floor(minY); y <= Math.ceil(maxY); y++) {
-    const xs = [];
-    for (let i = 0; i < points.length; i++) {
-      const a = points[i], b = points[(i + 1) % points.length];
+  for (const p of pts) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
+  for (let y = Math.ceil(minY); y <= Math.floor(maxY); y++) {
+    const xs: number[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
       if ((a[1] <= y && b[1] > y) || (b[1] <= y && a[1] > y)) {
-        xs.push(a[0] + ((y + 0.5 - a[1]) * (b[0] - a[0])) / (b[1] - a[1]));
+        xs.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
       }
     }
     xs.sort((p, q) => p - q);
-    for (let k = 0; k + 1 < xs.length; k += 2) {
-      fillRect(Math.ceil(xs[k]), y, Math.floor(xs[k + 1]) - Math.ceil(xs[k]) + 1, 1, c);
-    }
+    for (let k = 0; k + 1 < xs.length; k += 2)
+      for (let x = Math.ceil(xs[k]); x <= Math.floor(xs[k + 1]); x++) setPx(x, y, c);
   }
 }
-function vGrad(x, y, w, h, top, bot) {
-  for (let yy = 0; yy < h; yy++) {
-    const t = h <= 1 ? 0 : yy / (h - 1);
-    const c = [Math.round(top[0] + (bot[0] - top[0]) * t), Math.round(top[1] + (bot[1] - top[1]) * t), Math.round(top[2] + (bot[2] - top[2]) * t)];
-    fillRect(x, y + yy, w, 1, c);
+function circleFill(cx: number, cy: number, r: number, hex: string): void { disc(cx, cy, r, rgb(hex)); }
+function circleStroke(cx: number, cy: number, r: number, hex: string, lw: number): void {
+  const c = rgb(hex);
+  for (let a = 0; a < 360; a += 2) {
+    const t = a * Math.PI / 180;
+    disc(cx + r * Math.cos(t), cy + r * Math.sin(t), Math.max(0.6, lw / 2), c);
   }
 }
-function frame(x, y, w, h, t, c) {
-  fillRect(x, y, w, t, c); fillRect(x, y + h - t, w, t, c);
-  fillRect(x, y, t, h, c); fillRect(x + w - t, y, t, h, c);
-}
-function arrow(x, y, len, c, w) {
-  seg(x, y, x + len - 10, y, w, c);
-  poly([[x + len - 10, y - 6], [x + len, y], [x + len - 10, y + 6]], c);
+function rectStroke(x: number, y: number, w: number, h: number, hex: string, lw: number): void {
+  line(x, y, x + w, y, hex, lw); line(x, y + h, x + w, y + h, hex, lw);
+  line(x, y, x, y + h, hex, lw); line(x + w, y, x + w, y + h, hex, lw);
 }
 
-// ---- CRC32 + PNG (filter 0, RGB) ----
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
+// ---- PNG encoder (filter 0, zlib deflate, CRC32) ----
+const CRC_TABLE: number[] = (() => {
+  const t: number[] = [];
   for (let n = 0; n < 256; n++) {
     let c = n;
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
+    t.push(c >>> 0);
   }
   return t;
 })();
-function crc32(bytes) {
+function crc32(data: Uint8Array): number {
   let c = 0xffffffff;
-  for (const b of bytes) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 255] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
-function chunk(type, data) {
+function chunk(type: string, data: Uint8Array): Uint8Array {
   const out = new Uint8Array(12 + data.length);
   const dv = new DataView(out.buffer);
   dv.setUint32(0, data.length);
-  out.set([type.charCodeAt(0), type.charCodeAt(1), type.charCodeAt(2), type.charCodeAt(3)], 4);
+  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
   out.set(data, 8);
   dv.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
   return out;
 }
-function encodePNG() {
+function encodePNG(): Buffer {
   const raw = new Uint8Array(H * (1 + W * 3));
   for (let y = 0; y < H; y++) {
     raw[y * (1 + W * 3)] = 0;
     raw.set(buf.subarray(y * W * 3, (y + 1) * W * 3), y * (1 + W * 3) + 1);
   }
+  const idat = zlib.deflateSync(raw, { level: 9 });
   const ihdr = new Uint8Array(13);
   const dv = new DataView(ihdr.buffer);
   dv.setUint32(0, W); dv.setUint32(4, H);
   ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-  const idat = deflateSync(raw, { level: 9 });
-  const parts = [
-    new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", new Uint8Array(0)),
-  ];
-  const total = parts.reduce((s, p) => s + p.length, 0);
-  const png = new Uint8Array(total);
-  let off = 0;
-  for (const p of parts) { png.set(p, off); off += p.length; }
-  return png;
+  const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const parts = [sig, chunk("IHDR", ihdr), chunk("IDAT", new Uint8Array(idat)), chunk("IEND", new Uint8Array(0))];
+  let len = 0; for (const p of parts) len += p.length;
+  const out = new Uint8Array(len);
+  let off = 0; for (const p of parts) { out.set(p, off); off += p.length; }
+  return Buffer.from(out);
 }
 
-// ---- Vector stroke font: glyph = [advance, "M x,y L x,y ; M ..."] on a 6x10 grid, baseline y=7 ----
-const G = {
-  A: [6, "M0,7 L3,0 L6,7;M1.5,4.5 L4.5,4.5"],
-  B: [6, "M0,7 L0,0 L3.5,0 L5.5,1.5 L3.5,3.5 L0,3.5;M3.5,3.5 L5.5,5.5 L3.5,7 L0,7"],
-  C: [6, "M5.5,1.5 L3,0 L1,1.5 L0,3.5 L1,5.5 L3,7 L5.5,5.5"],
-  D: [6, "M0,7 L0,0 L3.5,0 L5.5,2 L5.5,5 L3.5,7 L0,7"],
-  E: [6, "M5.5,0 L0,0 L0,7 L5.5,7;M0,3.5 L4,3.5"],
-  F: [6, "M0,7 L0,0 L5.5,0;M0,3.5 L4,3.5"],
-  G: [6, "M5.5,1.5 L3,0 L1,1.5 L0,3.5 L1,5.5 L3,7 L5.5,7 L5.5,4 L3.5,4"],
-  H: [6, "M0,0 L0,7;M6,0 L6,7;M0,3.5 L6,3.5"],
-  I: [4, "M2,0 L2,7;M0.5,0 L3.5,0;M0.5,7 L3.5,7"],
-  J: [5, "M4,0 L4,6 L3,7 L1,7 L0,6"],
-  K: [6, "M0,0 L0,7;M5.5,0 L0,3.5 L5.5,7"],
-  L: [6, "M0,0 L0,7 L5.5,7"],
-  M: [7, "M0,7 L0,0 L3,3.5 L6,0 L6,7"],
-  N: [6, "M0,7 L0,0 L6,7 L6,0"],
-  O: [6, "M1.5,0 L4.5,0 L6,1.5 L6,5.5 L4.5,7 L1.5,7 L0,5.5 L0,1.5 L1.5,0"],
-  P: [6, "M0,7 L0,0 L4,0 L5.5,1.5 L4,3.5 L0,3.5"],
-  Q: [6, "M1.5,0 L4.5,0 L6,1.5 L6,5.5 L4.5,7 L1.5,7 L0,5.5 L0,1.5 L1.5,0;M3.5,5 L6,7"],
-  R: [6, "M0,7 L0,0 L4,0 L5.5,1.5 L4,3.5 L0,3.5;M3,3.5 L6,7"],
-  S: [6, "M5.5,1.5 L4,0 L2,0 L0.5,1.5 L0.5,3 L2,3.5 L4,3.5 L5.5,5 L5.5,6 L4,7 L2,7 L0.5,5.5"],
-  T: [6, "M0,0 L6,0;M3,0 L3,7"],
-  U: [6, "M0,0 L0,5.5 L1.5,7 L4.5,7 L6,5.5 L6,0"],
-  V: [6, "M0,0 L3,7 L6,0"],
-  W: [7, "M0,0 L1.5,7 L3,3.5 L4.5,7 L6,0"],
-  X: [6, "M0,0 L6,7;M6,0 L0,7"],
-  Y: [6, "M0,0 L3,3.5 L6,0;M3,3.5 L3,7"],
-  Z: [6, "M0,0 L6,0 L0,7 L6,7"],
-  "0": [6, "M1.5,0 L4.5,0 L6,1.5 L6,5.5 L4.5,7 L1.5,7 L0,5.5 L0,1.5 L1.5,0"],
-  "1": [4, "M2.5,0 L2.5,7;M1,1.5 L2.5,0;M0.5,7 L4,7"],
-  "2": [6, "M0.5,1.5 L2,0 L4,0 L5.5,1.5 L5.5,3 L0.5,7 L5.5,7"],
-  "3": [6, "M0.5,1 L2,0 L4,0 L5.5,1.5 L4,3.5 L5.5,5.5 L4,7 L2,7 L0.5,6"],
-  "4": [6, "M0.5,5 L3.5,0 L3.5,7;M0.5,5 L5,5"],
-  "5": [6, "M5.5,0 L0.5,0 L0.5,3.5 L3.5,3.5 L5,5 L5,6 L3.5,7 L1.5,7 L0.5,6"],
-  "6": [6, "M5,1 L3.5,0 L1.5,0.8 L0.5,2.5 L0.5,5.5 L1.5,7 L3.5,7 L5,5.5 L5,3.5 L3.5,3.5 L1.5,3.5"],
-  "7": [6, "M0.5,0 L5.5,0 L2.5,7"],
-  "8": [6, "M1.5,0 L4.5,0 L6,1.5 L4.5,3.5 L1.5,3.5 L0,1.5 L1.5,0;M1.5,3.5 L0,5.5 L1.5,7 L4.5,7 L6,5.5 L4.5,3.5"],
-  "9": [6, "M1,6 L2.5,7 L4.5,7 L5.5,5.5 L5.5,1.5 L4.5,0 L2.5,0 L1,1.5 L1,3.5 L2.5,3.5 L4.5,3.5"],
+// ---- Vector stroke font, designed for this page ----
+// Glyphs are polylines on a 6-wide x 9-tall grid: cap top y=0,
+// x-height top y=3, baseline y=7, descender y=9. Mixed case, drawn
+// with round strokes so headlines survive shrinking to 300px.
+const GLYPHS: Record<string, string[]> = {
+  A: ["0,7 3,0 6,7", "1,5 5,5"],
+  B: ["0,7 0,0 4,0 5,1 5,3 4,4 0,4", "0,4 4,4 5,5 5,6 4,7 0,7"],
+  C: ["5,1 4,0 1,0 0,1 0,6 1,7 4,7 5,6"],
+  D: ["0,7 0,0 4,0 6,2 6,5 4,7 0,7"],
+  E: ["5,0 0,0 0,7 5,7", "0,3 4,3"],
+  F: ["5,0 0,0 0,7", "0,3 4,3"],
+  G: ["5,1 4,0 1,0 0,1 0,6 1,7 4,7 5,6 5,4 3,4"],
+  H: ["0,0 0,7", "6,0 6,7", "0,3 6,3"],
+  I: ["2,0 2,7", "0,0 4,0", "0,7 4,7"],
+  J: ["4,0 4,6 3,7 1,7 0,6"],
+  K: ["0,0 0,7", "6,0 0,3 6,7"],
+  L: ["0,0 0,7 6,7"],
+  M: ["0,7 0,0 3,3 6,0 6,7"],
+  N: ["0,7 0,0 6,7 6,0"],
+  O: ["1,0 4,0 5,1 5,6 4,7 1,7 0,6 0,1 1,0"],
+  P: ["0,7 0,0 4,0 5,1 5,3 4,4 0,4"],
+  Q: ["1,0 4,0 5,1 5,6 4,7 1,7 0,6 0,1 1,0", "3,5 6,7"],
+  R: ["0,7 0,0 4,0 5,1 5,3 4,4 0,4", "2,4 6,7"],
+  S: ["5,1 4,0 1,0 0,1 0,3 1,4 4,4 5,5 5,6 4,7 1,7 0,6"],
+  T: ["0,0 6,0", "3,0 3,7"],
+  U: ["0,0 0,6 1,7 5,7 6,6 6,0"],
+  V: ["0,0 3,7 6,0"],
+  W: ["0,0 1,7 3,3 5,7 6,0"],
+  X: ["0,0 6,7", "6,0 0,7"],
+  Y: ["0,0 3,3 3,7", "6,0 3,3"],
+  Z: ["0,0 6,0 0,7 6,7"],
+  "0": ["1,0 4,0 5,1 5,6 4,7 1,7 0,6 0,1 1,0", "1,6 4,1"],
+  "1": ["1,1 2,0 2,7", "0,7 4,7"],
+  "2": ["0,1 1,0 4,0 5,1 5,3 0,7 5,7"],
+  "3": ["0,1 1,0 4,0 5,1 5,3 4,4 5,5 5,6 4,7 1,7 0,6"],
+  "4": ["0,0 0,4 5,4", "3,0 3,7"],
+  "5": ["5,0 0,0 0,4 4,4 5,5 5,6 4,7 1,7 0,6"],
+  "6": ["5,1 4,0 1,0 0,1 0,6 1,7 4,7 5,6 5,4 4,3 1,3 0,4"],
+  "7": ["0,0 5,0 2,7"],
+  "8": ["1,0 4,0 5,1 5,3 4,4 1,4 0,3 0,1 1,0", "0,4 1,4 4,4 5,5 5,6 4,7 1,7 0,6 0,5"],
+  "9": ["0,6 1,7 4,7 5,6 5,1 4,0 1,0 0,1 0,3 1,4 4,4 5,3"],
+  a: ["0,4 0,6 1,7 3,7 4,6 4,3 3,3 1,3 0,4", "4,3 4,7"],
+  b: ["0,0 0,7", "0,3 1,3 3,3 4,4 4,6 3,7 1,7 0,6"],
+  c: ["4,4 3,3 1,3 0,4 0,6 1,7 3,7 4,6"],
+  d: ["5,0 5,7", "1,3 3,3 4,4 4,6 3,7 1,7 0,6 0,4 1,3"],
+  e: ["4,6 3,7 1,7 0,6 0,4 1,3 3,3 4,4 0,4"],
+  f: ["2,1 3,0 3,7", "1,2 4,2"],
+  g: ["0,4 0,6 1,7 3,7 4,6 4,4 3,3 1,3 0,4", "4,3 4,8 3,9 1,9 0,8"],
+  h: ["0,0 0,7", "0,3 1,3 3,3 4,4 4,7"],
+  i: ["2,0 2,1", "2,3 2,7"],
+  j: ["3,3 3,8 2,9 1,9 0,8", "3,0 3,1"],
+  k: ["0,0 0,7", "4,3 0,5 4,7"],
+  l: ["2,0 2,7"],
+  m: ["0,7 0,3 2,3 2,7", "2,4 3,3 4,3 5,4 5,7"],
+  n: ["0,7 0,3 1,3 3,3 4,4 4,7"],
+  o: ["1,3 3,3 4,4 4,6 3,7 1,7 0,6 0,4 1,3"],
+  p: ["0,3 0,9", "0,3 3,3 4,4 4,6 3,7 1,7 0,6"],
+  q: ["5,3 5,9", "1,3 3,3 4,4 4,6 3,7 1,7 0,6 0,4 1,3"],
+  r: ["0,7 0,3 1,3 3,3 4,4"],
+  s: ["4,4 3,3 1,3 0,4 0,5 1,6 3,6 4,7 4,6"],
+  t: ["2,0 2,7 4,6", "0,2 4,2"],
+  u: ["0,3 0,6 1,7 3,7 4,6 4,3"],
+  v: ["0,3 2,7 4,3"],
+  w: ["0,3 1,7 2,4 3,7 4,3"],
+  x: ["0,3 4,7", "4,3 0,7"],
+  y: ["0,3 2,6 4,3", "2,6 2,9 1,9 0,8"],
+  z: ["0,3 4,3 0,7 4,7"],
+  " ": [],
+  ".": ["2,7 2,7"],
+  ",": ["2,7 2,7", "2,7 1,9"],
+  ":": ["2,2 2,2", "2,6 2,6"],
+  ";": ["2,2 2,2", "2,6 2,6", "2,6 1,9"],
+  "!": ["2,0 2,5", "2,7 2,7"],
+  "?": ["0,1 1,0 4,0 5,1 5,3 4,4 2,4", "2,6 2,6"],
+  "'": ["2,0 1,2"],
+  '"': ["1,0 0,2", "4,0 3,2"],
+  "-": ["0,4 5,4"],
+  "–": ["0,4 6,4"],
+  "—": ["0,4 6,4"],
+  "(": ["4,0 2,2 2,5 4,7"],
+  ")": ["1,0 3,2 3,5 1,7"],
+  "/": ["4,0 1,7"],
+  "%": ["0,0 5,7", "0,1 1,1 1,2 0,2 0,1", "4,5 5,5 5,6 4,6 4,5"],
+  "+": ["0,3 5,3", "2,1 2,6"],
+  "=": ["0,2 5,2", "0,5 5,5"],
+  "&": ["4,0 2,2 0,4 1,6 3,6 4,5 2,3 4,1"],
+  "*": ["2,0 2,7", "0,2 4,5", "4,2 0,5"],
+  "#": ["1,0 1,7", "4,0 4,7", "0,2 5,2", "0,5 5,5"],
+  "@": ["4,1 3,0 1,0 0,1 0,5 1,6 3,6 4,5 4,3 3,2 2,2 2,4 2,5 3,5"],
+  _: ["0,7 5,7"],
+  "•": ["1,3 3,3 3,5 1,5 1,3"],
+  "·": ["2,4 2,4"],
+  $: ["0,2 1,1 3,1 4,2 4,3 3,4 1,4 0,5 0,6 1,7 3,7 4,6", "2,0 2,8"],
+  "£": ["4,0 1,0 0,1 0,6 1,7 4,7", "0,3 3,3", "1,5 1,6"],
+  "€": ["5,1 4,0 1,0 0,1 0,6 1,7 4,7 5,6", "0,3 4,3", "0,5 4,5"],
+  "°": ["1,0 2,0 2,1 1,1 1,0"],
+  "×": ["0,1 3,4", "3,1 0,4"],
+  "→": ["0,3 5,3", "3,1 5,3 3,5"],
+  "↑": ["2,6 2,0", "0,2 2,0 4,2"],
+  "↓": ["2,0 2,6", "0,4 2,6 4,4"],
 };
-Object.assign(G, {
-  a: [6, "M5,3.5 L5,7;M0.5,7 L0.5,4.8 L1.5,3.5 L3.5,3.5 L5,4.8 L5,7 L0.5,7"],
-  b: [6, "M0.5,0 L0.5,7;M5,4.8 L3.5,3.5 L0.5,3.5 L0.5,7 L3.5,7 L5,5.8 L5,4.8"],
-  c: [6, "M5,4 L3.5,3.5 L1.5,3.5 L0.5,5 L0.5,5.8 L1.5,7 L3.5,7 L5,6"],
-  d: [6, "M5,0 L5,7;M0.5,4.8 L1.5,3.5 L3.5,3.5 L5,4.8 L5,5.8 L3.5,7 L1.5,7 L0.5,5.8"],
-  e: [6, "M0.5,5.2 L5,5.2;M5,4.8 L3.5,3.5 L1.5,3.5 L0.5,5 L0.5,5.8 L1.5,7 L3.5,7 L5,5.8"],
-  f: [4.5, "M4,7 L4,1 L3,0 L1.5,0;M1,3.5 L4,3.5"],
-  g: [6, "M5,3.5 L5,8.5 L3.5,10 L1.5,10 L0.5,9;M0.5,4.8 L1.5,3.5 L3.5,3.5 L5,4.8 L5,7 L3.5,7 L1.5,7 L0.5,5.8"],
-  h: [6, "M0.5,0 L0.5,7;M0.5,5 L2,3.5 L3.5,3.5 L5,5 L5,7"],
-  i: [3.5, "M2,3.5 L2,7;M2,0.8 L2,1.6"],
-  j: [4.5, "M3.5,3.5 L3.5,8.5 L2.5,10 L1,10;M3.5,0.8 L3.5,1.6"],
-  k: [6, "M0.5,0 L0.5,7;M5,3.5 L0.5,5.5 L5,7"],
-  l: [3.5, "M2,0 L2,7"],
-  m: [6.5, "M0.5,7 L0.5,3.5 L2,3.5 L2.5,5 L3,3.5 L4.5,3.5 L5,5 L5,7"],
-  n: [6, "M0.5,7 L0.5,3.5 L3,3.5 L5,5 L5,7"],
-  o: [6, "M1.5,3.5 L3.5,3.5 L5,5 L5,5.8 L3.5,7 L1.5,7 L0.5,5.8 L0.5,5 L1.5,3.5"],
-  p: [6, "M0.5,3.5 L0.5,10;M0.5,7 L3.5,7 L5,5.8 L5,4.8 L3.5,3.5 L0.5,3.5"],
-  q: [6, "M5,3.5 L5,10;M0.5,4.8 L1.5,3.5 L3.5,3.5 L5,4.8 L5,7 L0.5,7"],
-  r: [5, "M0.5,7 L0.5,3.5 L3,3.5 L4.5,4.5 L4.5,5.5"],
-  s: [6, "M4.5,4.2 L2.8,3.5 L1.2,3.9 L0.6,5 L1.6,5.6 L3.8,5.8 L4.8,6.6 L4,7.2 L2,7.2 L0.8,6.4"],
-  t: [4.5, "M2.5,1 L2.5,6.2 L1.5,7 L3.5,7;M0.5,3.5 L4,3.5"],
-  u: [6, "M0.5,3.5 L0.5,5.8 L1.5,7 L3.5,7 L5,5.8 L5,3.5"],
-  v: [6, "M0.5,3.5 L2.5,7 L5,3.5"],
-  w: [6.5, "M0.5,3.5 L1.5,7 L2.5,4.5 L3.5,7 L5.5,3.5"],
-  x: [6, "M0.5,3.5 L5,7;M5,3.5 L0.5,7"],
-  y: [6, "M0.5,3.5 L2.5,7 L5,3.5;M2.5,7 L2.5,9.5 L1,10"],
-  z: [6, "M0.5,3.5 L5,3.5 L0.5,7 L5,7"],
-  ".": [2.5, "M1.2,6.2 L1.2,7"],
-  ",": [2.5, "M1.2,6.2 L1.2,7 L0.8,8.5 L0,9.5"],
-  ":": [3, "M1.5,2.5 L1.5,3.3;M1.5,5.5 L1.5,6.3"],
-  ";": [3, "M1.5,2.5 L1.5,3.3;M1.5,5.5 L1.5,6.3 L1,8 L0.3,9"],
-  "'": [3, "M1.8,0 L1.3,2"],
-  "-": [4, "M0.5,4.2 L3.5,4.2"],
-  "\u2014": [7, "M0,4 L6,4"],
-  "%": [6.5, "M5.5,0 L0.5,7;M1.8,0.8 L1.8,2.4;M0.6,0.8 L0.6,2.4;M5.4,4.6 L5.4,6.2;M4.2,4.6 L4.2,6.2"],
-  "/": [5, "M4.5,0 L0.5,7"],
-  "(": [5, "M4,0 L2,1.5 L1,3.5 L2,5.5 L4,7"],
-  ")": [5, "M1,0 L3,1.5 L4,3.5 L3,5.5 L1,7"],
-  "+": [6, "M3,1.5 L3,5.5;M1,3.5 L5,3.5"],
-  "!": [3.5, "M1.8,0 L1.8,5;M1.8,6.2 L1.8,7"],
-  "?": [6, "M1,1.5 L2,0.3 L4,0.3 L5,1.5 L5,2.8 L3,4 L3,5;M3,6.2 L3,7"],
-  " ": [3, ""],
-});
-
-function drawGlyph(ch, x, y, s, w, c) {
-  const g = G[ch];
-  if (!g) return;
-  const paths = g[1].split(";");
-  for (const p of paths) {
-    const cmds = p.trim().split(/\s+/);
-    let cx = 0, cy = 0;
-    for (const cmd of cmds) {
-      if (!cmd) continue;
-      const op = cmd[0];
-      const [gx, gy] = cmd.slice(1).split(",").map(Number);
-      if (op === "M") { cx = gx; cy = gy; }
-      else if (op === "L") { seg(x + cx * s, y + cy * s, x + gx * s, y + gy * s, w, c); cx = gx; cy = gy; }
+const GLYPH_W: Record<string, number> = {
+  I: 4, J: 4, i: 3, l: 3, j: 3, f: 4, t: 4, r: 4, " ": 3, ".": 3, ",": 3,
+  ":": 3, ";": 3, "!": 3, "'": 3, '"': 5, "-": 5, "–": 6, "—": 6,
+  "(": 4, ")": 4, "/": 5, "%": 6, "+": 5, "=": 5, "&": 5, "*": 5,
+  "#": 6, "@": 6, _: 5, "•": 4, "·": 3, $: 5, "£": 5, "€": 5, "°": 3,
+  "×": 4, "→": 6, "↑": 4, "↓": 4, M: 6, W: 6, m: 6, w: 5, V: 6, A: 6, Q: 6,
+};
+function glyphWidth(ch: string): number { return GLYPH_W[ch] ?? 6; }
+function drawGlyph(ch: string, x: number, y: number, size: number, hex: string, lw: number): number {
+  const strokes = GLYPHS[ch];
+  const s = size / 9;
+  const sx = s * 0.82;
+  if (strokes) {
+    for (const st of strokes) {
+      const pts = st.split(" ").map((p) => {
+        const [px, py] = p.split(",").map(Number);
+        return [x + px * sx, y + py * s] as [number, number];
+      });
+      if (pts.length === 1) { disc(pts[0][0], pts[0][1], Math.max(0.7, lw / 2 + 0.4), rgb(hex)); }
+      else polyline(pts, hex, lw);
     }
   }
+  return (glyphWidth(ch) + 1.6) * sx;
 }
-function textWidth(text, s, track) {
+function textWidth(text: string, size: number): number {
+  const sx = (size / 9) * 0.82;
   let w = 0;
-  for (const ch of text) { const g = G[ch]; w += (g ? g[0] : 3) * s + track; }
-  return w - track;
+  for (const ch of text) w += (glyphWidth(ch) + 1.6) * sx;
+  return w;
 }
-function drawText(text, x, y, s, w, c, track = 0) {
+function drawText(x: number, y: number, size: number, text: string, hex: string): number {
+  const lw = Math.max(1, Math.round(size * 0.11));
   let cx = x;
-  for (const ch of text) {
-    const g = G[ch];
-    if (g) drawGlyph(ch, cx, y, s, w, c);
-    cx += ((g ? g[0] : 3) * s) + track;
-  }
-  return cx;
+  for (const ch of text) cx += drawGlyph(ch, cx, y, size, hex, lw);
+  return cx - x;
 }
-function centerText(text, cx, y, s, w, c, track = 0) {
-  drawText(text, cx - textWidth(text, s, track) / 2, y, s, w, c, track);
+function drawTextC(x: number, y: number, size: number, text: string, hex: string, maxW: number): void {
+  // centred on x
+  drawText(x - textWidth(text, size) / 2, y, size, text, hex);
 }
-function wrapText(text, s, maxW, track = 0) {
+function wrapLines(text: string, size: number, maxW: number): string[] {
   const words = text.split(" ");
-  const lines = [];
+  const lines: string[] = [];
   let cur = "";
-  for (const word of words) {
-    const trial = cur ? cur + " " + word : word;
-    if (textWidth(trial, s, track) <= maxW || !cur) cur = trial;
-    else { lines.push(cur); cur = word; }
+  for (const w of words) {
+    const trial = cur ? cur + " " + w : w;
+    if (textWidth(trial, size) <= maxW || !cur) cur = trial;
+    else { lines.push(cur); cur = w; }
   }
   if (cur) lines.push(cur);
   return lines;
 }
-function para(text, x, y, s, w, c, maxW, lh, track = 0) {
-  const lines = wrapText(text, s, maxW, track);
-  lines.forEach((ln, i) => drawText(ln, x, y + i * lh, s, w, c, track));
+function drawPara(x: number, y: number, size: number, text: string, hex: string, maxW: number, lh: number): number {
+  const lines = wrapLines(text, size, maxW);
+  lines.forEach((ln, i) => drawText(x, y + i * lh, size, ln, hex));
   return lines.length;
 }
-function star(cx, cy, r, c) {
-  poly([[cx, cy - r], [cx + r * 0.28, cy - r * 0.28], [cx + r, cy], [cx + r * 0.28, cy + r * 0.28], [cx, cy + r], [cx - r * 0.28, cy + r * 0.28], [cx - r, cy], [cx - r * 0.28, cy - r * 0.28]], c);
+
+// ---- small drawn scenes (primitives only) ----
+function sceneParliament(x: number, y: number, w: number, h: number): void {
+  fillRect(x, y, w, h, "#BFD9E8");
+  fillRect(x + w * 0.08, y + h * 0.55, w * 0.84, h * 0.45, "#E8E2D2");
+  polygon([[x + w * 0.3, y + h * 0.18], [x + w * 0.7, y + h * 0.18], [x + w * 0.5, y + h * 0.05]], "#8A97A5");
+  for (let i = 0; i < 5; i++) fillRect(x + w * (0.12 + i * 0.16), y + h * 0.3, w * 0.07, h * 0.3, "#F6F1E3");
 }
-function flagAU(x, y, w, h) {
-  fillRect(x, y, w, h, BLUE);
-  seg(x, y, x + w, y + h, 3, rgb("#ffffff"));
-  seg(x + w, y, x, y + h, 3, rgb("#ffffff"));
-  seg(x, y, x + w, y + h, 1.5, RED);
-  seg(x + w, y, x, y + h, 1.5, RED);
-  fillRect(x, y + h / 2 - 2, w, 4, rgb("#ffffff"));
-  fillRect(x + w / 2 - 2, y, 4, h, rgb("#ffffff"));
-  fillRect(x, y + h / 2 - 1, w, 2, RED);
-  fillRect(x + w / 2 - 1, y, 2, h, RED);
-  star(x + w * 0.72, y + h * 0.5, 7, rgb("#ffffff"));
-  star(x + w * 0.88, y + h * 0.28, 3, rgb("#ffffff"));
-  star(x + w * 0.88, y + h * 0.72, 3, rgb("#ffffff"));
+function sceneChart(x: number, y: number, w: number, h: number): void {
+  fillRect(x, y, w, h, "#14243E");
+  line(x + w * 0.1, y + h * 0.85, x + w * 0.9, y + h * 0.85, "#F6F1E3", 2);
+  line(x + w * 0.1, y + h * 0.85, x + w * 0.1, y + h * 0.15, "#F6F1E3", 2);
+  polyline([[x + w * 0.15, y + h * 0.6], [x + w * 0.35, y + h * 0.55], [x + w * 0.55, y + h * 0.4], [x + w * 0.85, y + h * 0.15]], "#F59E0B", 4);
+  polygon([[x + w * 0.85, y + h * 0.15], [x + w * 0.72, y + h * 0.18], [x + w * 0.82, y + h * 0.3]], "#F59E0B");
+  fillRect(x + w * 0.62, y + h * 0.55, w * 0.1, h * 0.3, "#C1272D");
+  fillRect(x + w * 0.76, y + h * 0.62, w * 0.1, h * 0.23, "#C1272D");
 }
-function building(x, y, w, h, c) {
-  fillRect(x, y + h * 0.3, w, h * 0.7, c);
-  poly([[x + w * 0.1, y + h * 0.3], [x + w * 0.5, y], [x + w * 0.9, y + h * 0.3]], c);
-  const cols = 5;
-  for (let i = 0; i < cols; i++) {
-    const cx = x + (w * (i + 0.5)) / cols;
-    fillRect(cx - 4, y + h * 0.42, 8, h * 0.5, PAPER);
+function sceneTube(x: number, y: number, w: number, h: number): void {
+  fillRect(x, y, w, h, "#F3E9D2");
+  fillRect(x, y + h * 0.62, w, h * 0.38, "#3A3A3A");
+  fillRect(x + w * 0.06, y + h * 0.18, w * 0.55, h * 0.42, "#C1272D");
+  fillRect(x + w * 0.1, y + h * 0.24, w * 0.47, h * 0.3, "#F6F1E3");
+  circleFill(x + w * 0.78, y + h * 0.34, h * 0.2, "#C1272D");
+  fillRect(x + w * 0.7, y + h * 0.3, w * 0.16, h * 0.08, "#1D4ED8");
+  line(x + w * 0.66, y + h * 0.06, x + w * 0.9, y + h * 0.06, "#141414", 2);
+  line(x + w * 0.66, y + h * 0.06, x + w * 0.66, y + h * 0.22, "#141414", 2);
+}
+function iconBox(x: number, y: number, s: number, bg: string): void {
+  fillRect(x, y, s, s, bg);
+  rectStroke(x, y, s, s, "#141414", 1);
+}
+function drawIcon(kind: string, x: number, y: number, s: number): void {
+  const u = s / 30;
+  switch (kind) {
+    case "rate": // rising arrow + coin
+      circleFill(x + 9 * u, y + 21 * u, 7 * u, "#D97706");
+      polyline([[x + 3 * u, y + 22 * u], [x + 12 * u, y + 14 * u], [x + 20 * u, y + 17 * u], [x + 27 * u, y + 6 * u]], "#141414", 3);
+      polygon([[x + 27 * u, y + 6 * u], [x + 20 * u, y + 6 * u], [x + 26 * u, y + 13 * u]], "#141414");
+      break;
+    case "eu": // circle of stars
+      for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4;
+        disc(x + 15 * u + 10 * u * Math.cos(a), y + 15 * u + 10 * u * Math.sin(a), 2 * u, rgb("#F59E0B"));
+      }
+      break;
+    case "fire":
+      polygon([[x + 15 * u, y + 2 * u], [x + 24 * u, y + 14 * u], [x + 27 * u, y + 22 * u], [x + 20 * u, y + 28 * u], [x + 10 * u, y + 28 * u], [x + 3 * u, y + 22 * u], [x + 6 * u, y + 14 * u]], "#EA580C");
+      polygon([[x + 15 * u, y + 12 * u], [x + 21 * u, y + 20 * u], [x + 18 * u, y + 26 * u], [x + 12 * u, y + 26 * u], [x + 9 * u, y + 20 * u]], "#F59E0B");
+      break;
+    case "leaf":
+      polygon([[x + 15 * u, y + 2 * u], [x + 26 * u, y + 12 * u], [x + 15 * u, y + 28 * u], [x + 4 * u, y + 12 * u]], "#0F766E");
+      line(x + 15 * u, y + 4 * u, x + 15 * u, y + 27 * u, "#F6F1E3", 2);
+      break;
+    case "oil":
+      fillRect(x + 6 * u, y + 6 * u, 18 * u, 20 * u, "#1F2937");
+      line(x + 6 * u, y + 12 * u, x + 24 * u, y + 12 * u, "#F59E0B", 2);
+      line(x + 6 * u, y + 20 * u, x + 24 * u, y + 20 * u, "#F59E0B", 2);
+      disc(x + 15 * u, y + 26 * u, 3 * u, rgb("#F59E0B"));
+      break;
+    case "wave":
+      polyline([[x + 2 * u, y + 10 * u], [x + 8 * u, y + 6 * u], [x + 14 * u, y + 12 * u], [x + 20 * u, y + 6 * u], [x + 28 * u, y + 10 * u]], "#1D4ED8", 3);
+      polyline([[x + 2 * u, y + 20 * u], [x + 8 * u, y + 16 * u], [x + 14 * u, y + 22 * u], [x + 20 * u, y + 16 * u], [x + 28 * u, y + 20 * u]], "#1D4ED8", 3);
+      break;
+    case "storm":
+      polygon([[x + 8 * u, y + 6 * u], [x + 14 * u, y + 2 * u], [x + 22 * u, y + 4 * u], [x + 26 * u, y + 10 * u], [x + 24 * u, y + 15 * u], [x + 6 * u, y + 15 * u]], "#475569");
+      polyline([[x + 16 * u, y + 15 * u], [x + 11 * u, y + 22 * u], [x + 17 * u, y + 22 * u], [x + 12 * u, y + 28 * u]], "#F59E0B", 3);
+      break;
+    case "doc":
+      fillRect(x + 8 * u, y + 3 * u, 14 * u, 24 * u, "#F6F1E3");
+      rectStroke(x + 8 * u, y + 3 * u, 14 * u, 24 * u, "#141414", 1);
+      line(x + 11 * u, y + 9 * u, x + 19 * u, y + 9 * u, "#1D4ED8", 2);
+      line(x + 11 * u, y + 14 * u, x + 19 * u, y + 14 * u, "#1D4ED8", 2);
+      line(x + 11 * u, y + 19 * u, x + 19 * u, y + 19 * u, "#1D4ED8", 2);
+      break;
+    case "chess":
+      for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++)
+        if ((r + c) % 2 === 0) fillRect(x + 3 * u + c * 6 * u, y + 3 * u + r * 6 * u, 6 * u, 6 * u, "#141414");
+      rectStroke(x + 3 * u, y + 3 * u, 24 * u, 24 * u, "#141414", 1);
+      break;
+    case "book":
+      fillRect(x + 5 * u, y + 4 * u, 20 * u, 22 * u, "#7C2D12");
+      fillRect(x + 8 * u, y + 7 * u, 14 * u, 16 * u, "#F6F1E3");
+      line(x + 11 * u, y + 11 * u, x + 19 * u, y + 11 * u, "#141414", 2);
+      line(x + 11 * u, y + 16 * u, x + 19 * u, y + 16 * u, "#141414", 2);
+      break;
+    case "market":
+      polyline([[x + 3 * u, y + 24 * u], [x + 10 * u, y + 16 * u], [x + 16 * u, y + 19 * u], [x + 27 * u, y + 6 * u]], "#0F766E", 3);
+      fillRect(x + 5 * u, y + 18 * u, 4 * u, 8 * u, "#0F766E");
+      fillRect(x + 13 * u, y + 12 * u, 4 * u, 14 * u, "#0F766E");
+      fillRect(x + 21 * u, y + 6 * u, 4 * u, 20 * u, "#0F766E");
+      break;
+    case "server":
+      fillRect(x + 5 * u, y + 4 * u, 20 * u, 22 * u, "#334155");
+      fillRect(x + 8 * u, y + 7 * u, 14 * u, 4 * u, "#F59E0B");
+      fillRect(x + 8 * u, y + 14 * u, 14 * u, 4 * u, "#F59E0B");
+      fillRect(x + 8 * u, y + 21 * u, 14 * u, 4 * u, "#38BDF8");
+      break;
+    default:
+      circleFill(x + 15 * u, y + 15 * u, 8 * u, "#1D4ED8");
   }
-  fillRect(x + w * 0.42, y + h * 0.72, w * 0.16, h * 0.28, INK);
 }
 
-// ---- Illustrated scenes (primitives only) ----
-function sceneInflation(x, y, w, h) {
-  fillRect(x, y, w, h, rgb("#fdf6e3"));
-  seg(x + 14, y + h - 16, x + 14, y + 14, 2, INK);
-  seg(x + 14, y + h - 16, x + w - 10, y + h - 16, 2, INK);
-  poly([[x + 20, y + h - 22], [x + w * 0.38, y + h * 0.62], [x + w * 0.58, y + h * 0.5], [x + w - 18, y + 20]], rgb("#ffffff"));
-  seg(x + 20, y + h - 22, x + w * 0.38, y + h * 0.62, 4, RED);
-  seg(x + w * 0.38, y + h * 0.62, x + w * 0.58, y + h * 0.5, 4, RED);
-  seg(x + w * 0.58, y + h * 0.5, x + w - 18, y + 20, 4, RED);
-  arrow(x + w - 52, y + 26, 34, RED, 4);
-  disc(x + w - 30, y + h - 30, 13, GOLD);
-  drawText("%", x + w - 38, y + h - 40, 1.6, 2, INK);
-}
-function sceneTube(x, y, w, h) {
-  fillRect(x, y, w, h, rgb("#22201c"));
-  poly([[x + w * 0.2, y + h], [x + w * 0.32, y + h * 0.3], [x + w * 0.68, y + h * 0.3], [x + w * 0.8, y + h]], rgb("#3a372e"));
-  fillRect(x + w * 0.3, y + h * 0.42, w * 0.4, h * 0.48, rgb("#c8102e"));
-  fillRect(x + w * 0.3, y + h * 0.42, w * 0.4, 8, rgb("#ffffff"));
-  fillRect(x + w * 0.36, y + h * 0.54, w * 0.12, h * 0.16, rgb("#bcd6e8"));
-  fillRect(x + w * 0.52, y + h * 0.54, w * 0.12, h * 0.16, rgb("#bcd6e8"));
-  disc(x + w * 0.5, y + h * 0.2, 11, RED);
-  fillRect(x + w * 0.5 - 22, y + h * 0.2 - 4, 44, 8, BLUE);
-  seg(x + 8, y + h - 8, x + w - 8, y + h - 8, 3, rgb("#8a8578"));
-}
-function sceneScales(x, y, w, h) {
-  fillRect(x, y, w, h, rgb("#f3ecd8"));
-  seg(x + w * 0.2, y + h * 0.3, x + w * 0.8, y + h * 0.3, 3, INK);
-  seg(x + w * 0.5, y + h * 0.3, x + w * 0.5, y + h * 0.75, 3, INK);
-  disc(x + w * 0.2, y + h * 0.38, 12, GOLD);
-  disc(x + w * 0.8, y + h * 0.38, 12, GOLD);
-  fillRect(x + w * 0.34, y + h * 0.78, w * 0.32, 8, INK);
-  building(x + w * 0.1, y + h * 0.5, w * 0.22, h * 0.4, rgb("#c9b98a"));
-}
-function sceneBars(x, y, w, h) {
-  fillRect(x, y, w, h, rgb("#f6ead9"));
-  fillRect(x + w * 0.12, y + h * 0.2, w * 0.2, h * 0.68, TEAL);
-  fillRect(x + w * 0.16, y + h * 0.08, w * 0.12, h * 0.14, TEAL);
-  const bars = [0.3, 0.45, 0.62, 0.8];
-  bars.forEach((f, i) => {
-    fillRect(x + w * (0.44 + i * 0.14), y + h * (0.9 - f), w * 0.09, h * f, i === 3 ? RED : BLUE);
-  });
-}
-function scenePeptide(x, y, w, h) {
-  fillRect(x, y, w, h, rgb("#eaf2f2"));
-  fillRect(x + w * 0.16, y + h * 0.3, w * 0.2, h * 0.45, rgb("#ffffff"));
-  frame(x + w * 0.16, y + h * 0.3, w * 0.2, h * 0.45, 2, INK);
-  fillRect(x + w * 0.16, y + h * 0.55, w * 0.2, h * 0.2, TEAL);
-  seg(x + w * 0.52, y + h * 0.25, x + w * 0.78, y + h * 0.6, 5, BLUE);
-  seg(x + w * 0.78, y + h * 0.6, x + w * 0.86, y + h * 0.72, 2, INK);
-  ring(x + w * 0.68, y + h * 0.42, 17, 3, RED);
-}
-function sceneFerry(x, y, w, h) {
-  vGrad(x, y, w, h, rgb("#bcd6e8"), rgb("#e8dfc9"));
-  poly([[x, y + h * 0.62], [x + w * 0.2, y + h * 0.52], [x + w * 0.4, y + h * 0.62], [x + w * 0.6, y + h * 0.52], [x + w * 0.8, y + h * 0.62], [x + w, y + h * 0.52], [x + w, y + h], [x, y + h]], BLUE);
-  poly([[x + w * 0.2, y + h * 0.5], [x + w * 0.8, y + h * 0.5], [x + w * 0.72, y + h * 0.72], [x + w * 0.28, y + h * 0.72]], rgb("#ffffff"));
-  fillRect(x + w * 0.32, y + h * 0.3, w * 0.36, h * 0.22, RED);
-  seg(x + w * 0.5, y + h * 0.3, x + w * 0.5, y + h * 0.12, 2, INK);
-  disc(x + w * 0.84, y + h * 0.24, 11, rgb("#ffffff"));
-  seg(x + w * 0.84, y + h * 0.24, x + w * 0.84, y + h * 0.24 - 8, 2, INK);
-  seg(x + w * 0.84, y + h * 0.24, x + w * 0.84 + 6, y + h * 0.24 + 2, 2, INK);
-}
-function sceneCouncil(x, y, w, h) {
-  fillRect(x, y, w, h, rgb("#efe8d2"));
-  building(x + w * 0.3, y + h * 0.22, w * 0.4, h * 0.66, rgb("#b7a06a"));
-  disc(x + w * 0.16, y + h * 0.72, 11, GOLD);
-  disc(x + w * 0.84, y + h * 0.72, 11, GOLD);
-  drawText("33", x + w * 0.42, y + h * 0.3, 2.2, 2, INK);
-}
-function sceneSummit(x, y, w, h) {
-  fillRect(x, y, w, h, rgb("#dbe8f2"));
-  fillRect(x, y, w, 40, BLUE);
-  for (let a = 0; a < 12; a++) {
-    const rad = (a * Math.PI * 2) / 12 - Math.PI / 2;
-    disc(x + w * 0.5 + 15 * Math.cos(rad), y + 20 + 15 * Math.sin(rad), 2.4, GOLD);
-  }
-  building(x + w * 0.3, y + h * 0.42, w * 0.4, h * 0.5, rgb("#b7a06a"));
-}
-function sceneChess(x, y, w, h) {
-  fillRect(x, y, w, h, rgb("#efe8d2"));
-  const sq = 10, bx = x + 3, by = y + 3;
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
-      if ((r + c) % 2 === 0) fillRect(bx + c * sq, by + r * sq, sq, sq, INK);
-    }
-  }
-  frame(bx, by, 80, 80, 1, INK);
-  disc(bx + 25, by + 25, 8, rgb("#ffffff"));
-  ring(bx + 25, by + 25, 8, 2, INK);
-  disc(bx + 55, by + 55, 8, INK);
-  ring(bx + 55, by + 55, 8, 2, rgb("#ffffff"));
-}
-
-// ---- Data ----
-const HEROES = [
-  { scene: sceneSummit, badge: "SUMMIT OPENS", title: ["EU LEADERS", "MEET IN", "BRUSSELS"], deck: "Budget, Ukraine funds and the next ECB chief on the agenda.", src: "CONFIRMED - CONSILIUM" },
-  { scene: sceneTube, badge: "1 OF 8", title: ["LONDON TUBE", "STRIKE BEGINS", "AT NOON"], deck: "First of eight stoppages. No Circle or Piccadilly line all day.", src: "CONFIRMED - TFL / RMT" },
-  { scene: sceneBars, badge: "3.2M", title: ["DRUG SURVEY", "3.2M WOMEN", "HARMED"], deck: "Others drinking harmed 3.2M women in 2025, AIHW finds.", src: "CONFIRMED - AIHW" },
-];
-const CARDS = [
-  { scene: sceneFerry, title: ["FERRIES STOP", "AT 07:30"], deck: "All Pittwater shut.", src: "CONFIRMED - MUA" },
-  { scene: sceneCouncil, title: ["COUNCILS: 33", "FUNDING FIXES"], deck: "33 council fixes.", src: "CONFIRMED - PARLIAMENT" },
-  { scene: scenePeptide, title: ["PEPTIDE", "INQUIRY OPENS"], deck: "MPs probe peptides.", src: "CONFIRMED - PARLIAMENT" },
-  { scene: sceneScales, title: ["GAMBLING", "REFORM STALLS"], deck: "No reply in 2 years.", src: "CONFIRMED - WESLEY MISSION" },
-  { scene: sceneInflation, title: ["BIG TECH", "RULES BACKED"], deck: "79% want more rules.", src: "REPORTED - ACCAN" },
-  { scene: sceneChess, title: ["CHESS GAME 3", "IN GENEVA"], deck: "15:00 CET; level 1-1.", src: "CONFIRMED - FIDE" },
-];
-const ALSO = [
-  ["10", "CONSTITUTION DAY", "77 years since 1949."],
-  ["11", "THANKSGIVING IN US", "Markets shut for holiday."],
-  ["12", "MIKTA IN CANBERRA", "Five nations; talks Fri."],
-  ["13", "GENDER REPORT", "Equality aids security."],
-  ["14", "AD CURBS BACKED", "74% back ad limits."],
-];
-const NUMBERS = [
-  ["3.2M", "HARM FROM DRINKING"],
-  ["33", "COUNCIL FIXES"],
-  ["8", "TUBE WALKOUTS"],
-  ["77", "YEARS ON"],
-  ["79%", "WANT TECH RULES"],
-  ["74%", "BACK AD CURBS"],
-];
-const TIMELINE = [
-  ["07:30", "SYDNEY", "Ferries stop"],
-  ["MORNING", "CANBERRA", "Reports tabled"],
-  ["10:00", "BRUSSELS", "EU summit opens"],
-  ["12:00", "LONDON", "Tube walkout begins"],
-  ["15:00 CET", "GENEVA", "Chess Game 3"],
-];
-const DATECHECK = "LEFT OUT, ALL 25 NOV: veterans apology; CPI 4.9%; duty-of-care law; Blyth; trusts deal; fire ants; tuna study; home-birth rally; Hastie; ASX fall; glacier verdict; Deloitte ban; AFCA review. EARLIER: Indonesia fire; COP31; Shenzhou-24. No hook yet: East Asia, Africa, Middle East, S. America.";
-
-// ---- Schematic dot-grid map ----
-function drawMap(x, y, w, h) {
-  const cols = 56, rows = 8;
-  const cw = w / cols, ch = h / rows;
-  const blobs = [
-    [10, 3, 6, 3], [28, 2, 3, 1.6], [29, 4, 3, 2], [39, 2.5, 7, 2], [50, 6, 2.5, 1.2], [53, 6, 1.2, 0.9],
+// ---- dot-grid world map (schematic) ----
+function drawMap(x: number, y: number, w: number, h: number): void {
+  fillRect(x, y, w, h, "#DCE9F2");
+  rectStroke(x, y, w, h, "#141414", 1);
+  // land blobs as dot grids: [cx, cy, rx, ry] in map coords
+  const blobs: [number, number, number, number][] = [
+    [0.16, 0.32, 0.10, 0.16], [0.30, 0.28, 0.07, 0.12], [0.50, 0.24, 0.10, 0.13],
+    [0.62, 0.32, 0.09, 0.15], [0.72, 0.30, 0.07, 0.11], [0.84, 0.38, 0.08, 0.12],
+    [0.52, 0.55, 0.06, 0.10], [0.30, 0.62, 0.05, 0.14], [0.86, 0.68, 0.05, 0.09],
   ];
-  const pins = [[10, 3], [28, 2], [30, 2], [38, 3], [50, 6], [53, 6]];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
+  const step = 11;
+  for (let gy = y + 8; gy < y + h - 6; gy += step)
+    for (let gx = x + 8; gx < x + w - 6; gx += step) {
+      const nx = (gx - x) / w, ny = (gy - y) / h;
       let land = false;
       for (const [bx, by, rx, ry] of blobs) {
-        const dx = (c - bx) / rx, dy = (r - by) / ry;
-        if (dx * dx + dy * dy <= 1) land = true;
+        const dx = (nx - bx) / rx, dy = (ny - by) / ry;
+        if (dx * dx + dy * dy <= 1) { land = true; break; }
       }
-      const cx = x + (c + 0.5) * cw, cy = y + (r + 0.5) * ch;
-      disc(cx, cy, land ? 2.4 : 1.3, land ? MIDGREY : rgb("#cfc6ae"));
+      disc(gx, gy, land ? 2.2 : 1.1, rgb(land ? "#5B7A94" : "#B9CFDE"));
     }
+  const pins: [number, number, string, number][] = [
+    [0.86, 0.70, "CANBERRA", -1], [0.50, 0.22, "LONDON", 1], [0.72, 0.30, "SEOUL", 1],
+    [0.62, 0.38, "DELHI", 1], [0.16, 0.34, "NEW YORK", 1], [0.55, 0.52, "GULF", 1],
+    [0.30, 0.66, "SANTIAGO", 1],
+  ];
+  for (const [px, py, label, side] of pins) {
+    const cx = x + px * w, cy = y + py * h;
+    disc(cx, cy, 5, rgb("#C1272D")); disc(cx, cy, 2, rgb("#F6F1E3"));
+    const lw2 = textWidth(label, 10);
+    drawText(side < 0 ? cx - 8 - lw2 : cx + 8, cy - 5, 10, label, "#141414");
   }
-  for (const [pc, pr] of pins) {
-    disc(x + (pc + 0.5) * cw, y + (pr + 0.5) * ch, 4.5, RED);
-  }
+  drawText(x + 10, y + h - 16, 12, "Dots: where the day's news happened", "#334155");
 }
 
-// ---- Page ----
-function main() {
-  fillRect(0, 0, W, H, PAPER);
-  // Masthead
-  hRule(24, 10, 976, 4, INK);
-  centerText("THE DAY SO FAR - EARLY ON 26 NOVEMBER - MORNING IN CANBERRA", 512, 22, 1.55, 2, INK, 0.6);
-  centerText("THE WORLD IN ONE DAY", 512, 40, 6.4, 4, INK, 1.2);
-  centerText("THURSDAY 26 NOVEMBER 2026", 512, 92, 3.2, 3, RED, 1.5);
-  hRule(24, 122, 976, 3, INK);
-  hRule(24, 128, 976, 1, INK);
-  // Meta bar
-  drawText("OCEANIA 8  -  EUROPE 3  -  SOUTH ASIA 1  -  N. AMERICA 1  -  MULTI 1", 24, 136, 1.7, 2, INK, 0.4);
-  const metaR = "14 STORIES - ALL DATED 26 NOV";
-  drawText(metaR, 1000 - textWidth(metaR, 1.7, 0.4), 136, 1.7, 2, INK, 0.4);
-  hRule(24, 154, 976, 1, MIDGREY);
-  // Heroes
-  const colW = 317, gap = 12;
-  HEROES.forEach((hero, i) => {
-    const x = 24 + i * (colW + gap), y = 162;
-    hero.scene(x, y, colW, 104);
-    frame(x, y, colW, 104, 2, INK);
-    const badge = hero.badge;
-    const bw = textWidth(badge, 1.7, 0.4) + 16;
-    fillRect(x + colW - bw, y, bw, 22, RED);
-    drawText(badge, x + colW - bw + 8, y + 4, 1.7, 2, rgb("#ffffff"), 0.4);
-    let ty = y + 116;
-    for (const ln of hero.title) { drawText(ln, x, ty, 3.4, 3, INK, 0.5); ty += 26; }
-    const deckLines = wrapText(hero.deck, 1.85, colW);
-    deckLines.forEach((ln, k) => drawText(ln, x, ty + 4 + k * 21, 1.85, 2, INK));
-    drawText(hero.src, x, ty + 4 + deckLines.length * 21 + 6, 1.5, 2, GREY, 0.3);
-  });
-  hRule(24, 402, 976, 2, INK);
-  // Cards
-  const cardW = 317, cardH = 140, rowGap = 12;
-  CARDS.forEach((card, i) => {
-    const col = i % 3, row = Math.floor(i / 3);
-    const x = 24 + col * (cardW + gap), y = 410 + row * (cardH + rowGap);
-    fillRect(x, y, cardW, cardH, rgb("#fffdf6"));
-    frame(x, y, cardW, cardH, 1, MIDGREY);
-    card.scene(x + 4, y + 4, 86, cardH - 8);
-    frame(x + 4, y + 4, 86, cardH - 8, 1, INK);
-    const tx = x + 98;
-    let ty = y + 14;
-    for (const ln of card.title) { drawText(ln, tx, ty, 2.6, 2, INK, 0.3); ty += 24; }
-    drawText(card.deck, tx, y + 78, 1.8, 2, INK);
-    drawText(card.src, tx, y + cardH - 16, 1.35, 2, GREY, 0.2);
-  });
-  hRule(24, 706, 976, 2, INK);
-  // Also On (two columns of four)
-  drawText("ALSO ON - 10 TO 14", 24, 714, 2.2, 2, INK, 0.5);
-  hRule(24, 736, 556, 1, MIDGREY);
-  ALSO.forEach((item, i) => {
-    const col = i < 3 ? 0 : 1, row = i % 3;
-    const x = 24 + col * 308, y = 744 + row * 52;
-    drawText(item[0], x, y, 2.1, 2, RED, 0.3);
-    drawText(item[1], x + 30, y, 2.1, 2, INK, 0.3);
-    drawText(item[2], x + 30, y + 20, 1.7, 2, GREY, 0.2);
-  });
-  // Date Check + map (right column)
-  const dx = 596, dw = 404;
-  frame(dx, 714, dw, 188, 2, RED);
-  drawText("DATE CHECK - LEFT OUT ON PURPOSE", dx + 10, 722, 1.9, 2, RED, 0.3);
-  para(DATECHECK, dx + 10, 744, 1.3, 2, INK, dw - 20, 15);
-  drawText("SCHEMATIC MAP - NOT TO SCALE", dx + 10, 846, 1.4, 2, GREY, 0.3);
-  drawMap(dx + 12, 858, dw - 24, 20);
-  drawText("PINS: BRUSSELS, LONDON, GENEVA, DELHI, CANBERRA, WASHINGTON", dx + 10, 886, 1.1, 1, GREY, 0.2);
-  // Numbers strip
-  hRule(24, 912, 976, 1, MIDGREY);
-  NUMBERS.forEach((n, i) => {
-    const x = 24 + i * 163;
-    drawText(n[0], x, 920, 3.6, 3, RED, 0.5);
-    drawText(n[1], x, 948, 1.4, 2, INK, 0.3);
-    if (i) fillRect(x - 8, 918, 1, 36, MIDGREY);
-  });
-  hRule(24, 966, 976, 1, MIDGREY);
-  // Timeline
-  drawText("DAY SO FAR", 24, 974, 1.8, 2, RED, 0.4);
-  TIMELINE.forEach((t, i) => {
-    const x = 120 + i * 175;
-    drawText(t[0] + " " + t[1], x, 974, 1.7, 2, INK, 0.3);
-    drawText(t[2], x, 990, 1.55, 2, GREY, 0.2);
-  });
-  // Footer
-  hRule(24, 1010, 976, 1, MIDGREY);
-  drawText("SOURCES: CONSILIUM - TFL/RMT - AIHW - PARLIAMENT - MUA - WESLEY MISSION - ACCAN - FIDE - PIB. DRAWN IN CODE.", 24, 1016, 1.25, 1, GREY, 0.15);
+// ---- data ----
+type Story = { n: string; title: string; deck: string; tag: string; icon: string; bg: string };
+const HEROES: { title: string; deck: string; tag: string; scene: string; src: string }[] = [
+  { title: "EU summit opens in Brussels", deck: "Leaders clash over budget and EUR45bn Ukraine loan; no deal expected.", tag: "EUROPE · SUMMIT · REPORTED", scene: "parliament", src: "Reuters" },
+  { title: "Korea raises rates to 3.25%", deck: "Bank of Korea lifts base rate 25bp, 5-2 vote; growth forecast raised.", tag: "E ASIA · ECONOMY · CONFIRMED", scene: "chart", src: "Reuters" },
+  { title: "Tube strike begins at noon", deck: "RMT 24-hour walkout, first of 8. No Circle or Piccadilly all day.", tag: "EUROPE · TRANSPORT · CONFIRMED", scene: "tube", src: "TfL / RMT" },
+];
+const CARDS: Story[] = [
+  { n: "4", title: "Flinders Island fire", deck: "6 properties hit; 14,000 ha burn, 10% of island.", tag: "OCEANIA · REPORTED", icon: "fire", bg: "#FFEDD5" },
+  { n: "5", title: "2035 target slips away", deck: "Australia on track for a 48% cut, not 62-70%.", tag: "OCEANIA · CONFIRMED", icon: "leaf", bg: "#D1FAE5" },
+  { n: "6", title: "Oil nears $95", deck: "Brent $94.71 as Hormuz mine reports disrupt shipping.", tag: "MID EAST · REPORTED", icon: "oil", bg: "#FEF3C7" },
+  { n: "7", title: "King tides flood coast", deck: "Peak tides; flood warnings run to Thu 4pm.", tag: "N AMERICA · REPORTED", icon: "wave", bg: "#DBEAFE" },
+  { n: "8", title: "Storm hits Thanksgiving", deck: "Nor'easter lashes East Coast; 60-70 mph gusts.", tag: "N AMERICA · REPORTED", icon: "storm", bg: "#E0E7FF" },
+  { n: "9", title: "UK-EU treaties out", deck: "Two texts out; 10-year exit-cost clause.", tag: "EUROPE · REPORTED", icon: "doc", bg: "#DBEAFE" },
+  { n: "10", title: "Chess: Game 3 today", deck: "1-1; Sindarov White, 15:00 CET, Geneva.", tag: "EUROPE · SCHEDULE", icon: "chess", bg: "#F3E8FF" },
+  { n: "11", title: "Constitution Day", deck: "India marks 77 years since the 1949 adoption.", tag: "S ASIA · CONFIRMED", icon: "book", bg: "#FFEDD5" },
+  { n: "12", title: "Asia markets rebound", deck: "Nikkei, Kospi and Taiex rise after Wall St fightback.", tag: "E ASIA · REPORTED", icon: "market", bg: "#D1FAE5" },
+  { n: "13", title: "Homes v data centres", deck: "Kashiwa revolt as centres loom over homes.", tag: "E ASIA · REPORTED", icon: "server", bg: "#E0E7FF" },
+  { n: "14", title: "PBS freeze passes", deck: "Senate passes script-price freeze to 2030.", tag: "OCEANIA · CONFIRMED", icon: "doc", bg: "#D1FAE5" },
+  { n: "15", title: "Channel boat dealer exposed", deck: "BBC: firm linked to a third of crossings.", tag: "EUROPE · REPORTED", icon: "wave", bg: "#FEF3C7" },
+];
+const ALSO: [string, string, string][] = [
+  ["16", "Blyth fronts media with Hanson", "OCEANIA"],
+  ["17", "Trusts tax passes Parliament", "OCEANIA"],
+  ["18", "3m women hurt by others' drinking", "OCEANIA"],
+  ["19", "Ferries stop from 07:30", "OCEANIA"],
+  ["20", "Councils: 33 funding fixes", "OCEANIA"],
+  ["21", "Gambling reform 'a monument to inaction'", "OCEANIA"],
+  ["22", "Davis Cup quarters in Bologna today", "EUROPE"],
+  ["23", "UK seasons shift: fewer frosts", "EUROPE"],
+  ["24", "Congress marks Constitution Day", "S ASIA"],
+  ["25", "Correios strike due at 22:00", "S AMERICA"],
+  ["26", "Poland's president lectures in Santiago", "S AMERICA"],
+  ["27", "Copa flies Panama-Margarita", "S AMERICA"],
+  ["28", "Mumbai marks 26/11 anniversary", "S ASIA"],
+  ["29", "Cook Strait ferry designs out", "OCEANIA"],
+  ["30", "Health NZ rehires 166 it cut", "OCEANIA"],
+  ["31", "Fuego ash plume to 14,000 ft", "N AMERICA"],
+];
 
-  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
-  mkdirSync(outDir, { recursive: true });
-  writeFileSync(join(outDir, "entry.png"), encodePNG());
+// ---- build the page ----
+function build(): void {
+  fillRect(0, 0, W, H, "#F6F1E3");
+  // Masthead
+  fillRect(0, 0, W, 86, "#14243E");
+  drawText(18, 10, 14, "THE WORLD IN ONE PAGE", "#F59E0B");
+  drawText(18, 28, 38, "Thursday 26 November 2026", "#F6F1E3");
+  const right = "31 STORIES  ·  7 REGIONS";
+  drawText(W - 18 - textWidth(right, 16), 12, 16, right, "#F6F1E3");
+  drawText(W - 18 - textWidth("All of one day's news", 13), 34, 13, "All of one day's news", "#BFD9E8");
+  drawText(W - 18 - textWidth("Happened or first reported today", 13), 52, 13, "Happened or first reported today", "#BFD9E8");
+  // Numbers strip
+  fillRect(0, 86, W, 30, "#C1272D");
+  drawTextC(W / 2, 95, 14, "3.25% Korea rate  ·  $94.71 Brent  ·  48% by 2035  ·  14,000 ha  ·  +1.3% Nikkei  ·  166 rehired", "#F6F1E3", W);
+  // Heroes
+  const hw = 328, hx = [16, 348, 680];
+  HEROES.forEach((hs, i) => {
+    const x = hx[i], y = 124;
+    fillRect(x, y, hw, 196, "#FFFFFF");
+    rectStroke(x, y, hw, 196, "#141414", 2);
+    if (hs.scene === "parliament") sceneParliament(x + 10, y + 8, hw - 20, 60);
+    else if (hs.scene === "chart") sceneChart(x + 10, y + 8, hw - 20, 60);
+    else sceneTube(x + 10, y + 8, hw - 20, 60);
+    const tlines = wrapLines(hs.title, 23, hw - 20).slice(0, 2);
+    tlines.forEach((ln, k) => drawText(x + 10, y + 76 + k * 26, 23, ln, "#141414"));
+    drawPara(x + 10, y + 130, 13, hs.deck, "#333333", hw - 20, 16);
+    fillRect(x + 10, y + 176, hw - 20, 1, "#999999");
+    drawText(x + 10, y + 182, 10, hs.tag + "  ·  " + hs.src, "#666666");
+  });
+  // Cards: 4 columns x 3 rows
+  const cw = 242, ch = 84, cgx = 8, cgy = 8;
+  CARDS.forEach((cd, i) => {
+    const col = i % 4, row = Math.floor(i / 4);
+    const x = 16 + col * (cw + cgx), y = 328 + row * (ch + cgy);
+    fillRect(x, y, cw, ch, "#FFFFFF");
+    rectStroke(x, y, cw, ch, "#141414", 1);
+    iconBox(x + 8, y + 8, 34, cd.bg);
+    drawIcon(cd.icon, x + 8, y + 8, 34);
+    const ct = wrapLines(cd.n + ". " + cd.title, 15, cw - 56).slice(0, 2);
+    ct.forEach((ln, k) => drawText(x + 48, y + 6 + k * 17, 15, ln, "#141414"));
+    drawPara(x + 48, y + 42, 11, cd.deck, "#333333", cw - 56, 13);
+    drawText(x + 48, y + ch - 14, 10, cd.tag, "#666666");
+  });
+  // Map + timeline band
+  const my = 600, mh = 112;
+  drawMap(16, my, 496, mh);
+  fillRect(520, my, 488, mh, "#14243E");
+  rectStroke(520, my, 488, mh, "#141414", 1);
+  drawText(534, my + 8, 13, "THE DAY IN LOCAL TIMES", "#F59E0B");
+  const tl: [string, string][] = [
+    ["07:30", "Sydney: ferries stop"],
+    ["Morning", "Canberra: PBS freeze passes"],
+    ["Morning", "Seoul: rates to 3.25%"],
+    ["12:00", "London: Tube walkout"],
+    ["15:00", "Geneva: Chess Game 3"],
+    ["16:00", "Santiago: ECLAC lecture"],
+    ["22:00", "Brasilia: postal strike due"],
+  ];
+  tl.forEach(([t, s], i) => {
+    const yy = my + 26 + i * 12;
+    drawText(534, yy, 10, t, "#F59E0B");
+    drawText(606, yy, 10, s, "#F6F1E3");
+  });
+  // Also on
+  const ay = 720;
+  drawText(16, ay, 19, "ALSO ON 26 NOVEMBER", "#141414");
+  fillRect(16, ay + 25, W - 32, 2, "#C1272D");
+  const colW = 328, rowH = 32;
+  ALSO.forEach(([n, t, region], i) => {
+    const col = Math.floor(i / 7), row = i % 7;
+    const x = 16 + col * colW, y = ay + 31 + row * rowH;
+    drawText(x, y + 2, 14, n + ".", "#C1272D");
+    const lines = wrapLines(t, 14, colW - 118).slice(0, 2);
+    drawText(x + 28, y + 2, 14, lines[0] ?? t, "#141414");
+    if (lines[1]) drawText(x + 28, y + 16, 12, lines[1], "#141414");
+    drawText(x + colW - 76, y + 3, 10, region, "#666666");
+  });
+  // Date check footer
+  const fy = 976;
+  fillRect(0, fy, W, H - fy, "#14243E");
+  drawText(16, fy + 6, 12, "DATE CHECK — left out as 25 Nov: veterans apology, CPI 4.9%, duty-of-care law, Blyth switch, fire ants,", "#F6F1E3");
+  drawText(16, fy + 20, 12, "home-birth rally, Hastie jobs, Essential poll, Victoria AI plan, 2C record, peptide inquiry, party rename,", "#F6F1E3");
+  drawText(16, fy + 34, 12, "Solomon treaty, Cairo fire, tariffs, Hera images, Ramaphosa ruling. No verified Africa hook found.", "#F59E0B");
+}
+
+function main(): void {
+  build();
+  const png = encodePNG();
+  const outDir = process.env.MAKEFUN_OUTPUT_DIR || "/output";
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, "entry.png"), png);
 }
 main();
